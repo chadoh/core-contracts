@@ -1,20 +1,41 @@
+// near_sdk provides lots of support for easily writing performant contracts including
+
+// a custom binary serialization / deserialization format for storing contract state efficiently on chain to reduce storage costs and also make serialization operations computationally efficient (to reduce compute costs, ie. less gas is used than a JSON serialization format, for example)
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+
+//  in some cases, due to limitations of JSON and JavaScript for large numbers, ie. `U64` is a wrapped type that includes an internal `u64` representation but when returned from a method will be converted to a string for compatibility with client-side applications. clients of the contracts will require JSON formats for return types like numbers.  since JSON is limited to JavaScript number support (10^53) we need to wrap Rust u64 and u128 with some helper functionality that returns these numbers as JSON strings.  the difference is the uppercase "U" on wrapped types vs the lowercase "u" on Rust native types (which these types use to maintain a Rust-compatible internal representation)
 use near_sdk::json_types::{U128, U64};
+
+// near_sdk exposes the environment through env which developers can use to interrogate the NEAR Runtime for information like the signer of the current transaction, the state of the contract, etc.  near_bindgen is explained in context further along in this document.  AccountId, Balance and EpochHeight are all types that are native to NEAR protocol and represent what you expect them to.  check out the nearcore source code for more details about these types like AccountId here: https://github.com/near/nearcore/blob/master/core/primitives/src/types.rs#L15
 use near_sdk::{env, near_bindgen, AccountId, Balance, EpochHeight};
+
+// when choosing to organize how data is stored by your contract, it's important to first decide whether you want to use "ACCOUNT storage" or "contract STATE storage".
+// "ACCOUNT storage" is a key-value structure which is ideal for managing large contract state or cases with sparse access to contract data (ie. you only need a few pieces of data on occasion).  this state is only deserialized on access and otherwise remains untouched.  you would either write to and read from directly using the Storage interface or choose a more appropriate abstractions from among the list of available collections (https://github.com/near/near-sdk-rs/tree/master/near-sdk/src/collections) like a PersistentVector or UnorderedMap. from the source code:  UnorderedMap is a map implemented on a trie. Unlike `std::collections::HashMap` the keys in this map are not hashed but are instead serialized. (https://github.com/near/near-sdk-rs/blob/master/near-sdk/src/collections/unordered_map.rs)
+// "contract STATE storage" is a serialized representation of the contract struct (the one decorated with #[near_bindgen] below).  using contract state storage is more efficient when contract data is small (or at least bounded, ie. limited) and operations on the data are infrequent (or at least bounded).  since this state is deserialized in its entirety every time a contract method is called, it's important to keep it small.
 use std::collections::HashMap;
 
+// Rust allows us to define our own custom memory allocation mechanism to make memory management as efficient as possible and wee_alloc, the "Wasm-Enabled, Elfin (small) Allocator" has good performance when compiled to Wasm (https://github.com/rustwasm/wee_alloc)
 #[global_allocator]
 static ALLOC: near_sdk::wee_alloc::WeeAlloc = near_sdk::wee_alloc::WeeAlloc::INIT;
 
+// near_sdk provides wrapped types that allow us to return JSON-compatible formats for big numbers. use these types when contract methods return large numbers.
 type WrappedTimestamp = U64;
 
-/// Voting contract for unlocking transfers. Once the majority of the stake holders agree to
-/// unlock transfer, the time will be recorded and the voting ends.
+// Wrap a struct in `#[near_bindgen]` and it generates a smart contract compatible with the NEAR blockchain.
+// if this macro is used on the struct then it exposes the execution environment.  if the macro is used on an impl section then it wraps public methods of the implementation with contract-compatible code like JSON / Borsch serialization depending on method return types (https://github.com/near/near-sdk-rs/blob/master/near-sdk-macros/src/lib.rs#L13)
 #[near_bindgen]
+// contract state should be serialized to store it on chain.  borsh is an efficient binary representation developed by the NEAR collective for this purpose.
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct VotingContract {
+    // examples of storing primitive values in contract state
+    some_number: u32,
+    some_bool: bool,
+
+    // an example of storing a map of custom types (AccountId -> Balance)
     /// How much each validator votes
     votes: HashMap<AccountId, Balance>,
+
+    // an example of storing a custom type (Balance)
     /// Total voted balance so far.
     total_voted_stake: Balance,
     /// When the voting ended. `None` means the poll is still open.
@@ -23,14 +44,19 @@ pub struct VotingContract {
     last_epoch_height: EpochHeight,
 }
 
+// override the default behavior of all methods in the implementation (which is to initialize state if it doesn't exist).  this is added because the developer chose to use the #[init] decorator to allow fine grained control over contract state initialization. this bit of code is part of a larger context where we have decided to control contract initializing by decorating some other method (see below) with the #[init] macro.  by default all contract methods will try to initialize contract state if not already initialized (since it's possible to call any public methods on a deployed contract) but in this case we want to avoid that behavior
 impl Default for VotingContract {
     fn default() -> Self {
         env::panic(b"Voting contract should be initialized before usage")
     }
 }
 
+// decorating an implementation with #[near_bindgen] wraps all public methods with some extra code that handles serialization / deserialization or method parameters and return types, panics if money is attached unless the method is decorated with #[payable], etc.
 #[near_bindgen]
 impl VotingContract {
+    // decorating a public method with #[init] will add some machinery to "initialize the contract" by serializing the struct into contract state (saving the return value of this method on chain). you can add the #[init] decorator to any of the public methods to mark it as something like a "constructor" for the contract.  note there's nothing special about the `new()` method name here, it could just as well be `old()` and would work fine ... but `new()` sets the correct expectation for anyone reading the code.
+    // this method uses a reference to the environment to assert that the state does not already exist.  we don't want to accidentally re-initialize the contract at some later time and blow away any valuable state that has been captured.
+    //  expects that the method it decorates will return an instance of the `struct` which is being referenced by this implementation section. the return value will be serialized on chain.
     #[init]
     pub fn new() -> Self {
         assert!(!env::state_exists(), "The contract is already initialized");
@@ -42,6 +68,10 @@ impl VotingContract {
         }
     }
 
+    // public methods will be exposed as contract methods avaliable for clients to call
+    // if a method borrows (that's a Rust thing that basically means "safely takes a temporary reference to") self then you can be sure that it will interact with contract state but NOT change contract state
+    // same as above but borrowing a mutable reference which means it will interact with contract state AND that it WILL change contract state
+    // note that #[near_bindgen] adds code to each method of the contract which reacts to the presence of self or &mut self.  the additional code first tries to deserialize contract state.  contract state is stored in a special key STATE.  near_sdk will call Default() if state does not exist (calls env::state_exists()), otherwise will call Default() as part of preparing to run a method
     /// Ping to update the votes according to current stake of validators.
     pub fn ping(&mut self) {
         assert!(self.result.is_none(), "Voting has already ended");
@@ -73,6 +103,8 @@ impl VotingContract {
         }
     }
 
+    // methods can take arguments which will be deserialized from JSON and return types which will be serialized to JSON if called from an external context.  making internal method calls within a Rust context doesn't require the same serialization / deserialization overhead of course
+    // internally we can call contracts using positional arguments. externally, via some external interface (simulation tests, via near-api-js, etc). raw Wasm doesn't know about types in the interface so no positional args allowed, we have to pass JSON objects which get deserialized into the fn args as needed. we parse inputs for these methods completely differnetly. you can run macro expansion on the compiler to see raw code generated per method and see what's happening behind the scenes before we get to body of method
     /// Method for validators to vote or withdraw the vote.
     /// Votes for if `is_vote` is true, or withdraws the vote if `is_vote` is false.
     pub fn vote(&mut self, is_vote: bool) {
@@ -125,6 +157,23 @@ impl VotingContract {
             .iter()
             .map(|(account_id, stake)| (account_id.clone(), (*stake).into()))
             .collect()
+    }
+
+    // decorating a contract method with the #[payable] macro will allow the method to accept attached native NEAR tokens without a panic.  if money is sent to a method without adding the #[payable] macro then the method will panic.
+    #[payable]
+    pub fn show_me_the_money(&mut self) {
+        unimplemented!();
+    }
+
+    // methods which are not marked as public will not be exposed as part of the contract interface
+    fn private_method() {
+        unimplemented!();
+    }
+    // sometimes a method should be available to the contract via promise call which requires that it is exposed on the contract but not callable by anyone other than the contract itself.  this is a common pattern in NEAR which can be hand-crafted with a few lines of code but this macro makes it more readable (see near-sdk-rs readme: https://github.com/near/near-sdk-rs/blob/master/README.md)
+    // THIS IS A PENDING FEATURE, not available in near-sdk-rs 2.0.0 at time of writing
+    #[private]
+    pub fn contract_private_method() {
+        unimplemented!();
     }
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "voting-contract"
+name = "voting-contract"  # Build a Wasm file called voting-contract
 version = "0.2.0"
 authors = ["Near Inc <hello@nearprotocol.com>"]
 edition = "2018"
@@ -8,16 +8,15 @@ edition = "2018"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-near-sdk = "2.0.0"
+near-sdk = "2.0.0"        # Use near-sdk-rs version 2.0.0
 
 [profile.release]
 codegen-units = 1
-# Tell `rustc` to optimize for small code size.
-opt-level = "s"
-lto = true
-debug = false
-panic = "abort"
-overflow-checks = true
+opt-level = "s"           # Optimize for small code size (https://doc.rust-lang.org/cargo/reference/profiles.html?highlight=lto#opt-level)
+lto = true                # Optimize for small code size (https://doc.rust-lang.org/cargo/reference/profiles.html?highlight=lto#lto)
+debug = false             # Do not include debug info (https://doc.rust-lang.org/cargo/reference/profiles.html?highlight=lto#debug)
+panic = "abort"           # Terminate process on panic (https://doc.rust-lang.org/cargo/reference/profiles.html?highlight=lto#panic)
+overflow-checks = true    # Panic on overflow (https://doc.rust-lang.org/cargo/reference/profiles.html?highlight=lto#overflow-checks)
 
 [workspace]
 members = []
