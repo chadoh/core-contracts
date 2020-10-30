@@ -23,6 +23,8 @@ type WrappedTimestamp = U64;
 
 // Wrap a struct in `#[near_bindgen]` and it generates a smart contract compatible with the NEAR blockchain.
 // if this macro is used on the struct then it exposes the execution environment.  if the macro is used on an impl section then it wraps public methods of the implementation with contract-compatible code like JSON / Borsch serialization depending on method return types (https://github.com/near/near-sdk-rs/blob/master/near-sdk-macros/src/lib.rs#L13)
+/// Voting contract for unlocking transfers. Once the majority of the stake holders agree to
+/// unlock transfer, the time will be recorded and the voting ends.
 #[near_bindgen]
 // contract state should be serialized to store it on chain.  borsh is an efficient binary representation developed by the NEAR collective for this purpose.
 #[derive(BorshDeserialize, BorshSerialize)]
